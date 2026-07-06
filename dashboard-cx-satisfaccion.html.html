@@ -297,6 +297,7 @@ button { font-family: inherit; cursor: pointer; }
       <button class="tab" data-view="comercial" role="tab">Comercial</button>
       <button class="tab" data-view="mantenimiento" role="tab">Mantenimiento</button>
       <button class="tab" data-view="conduccion" role="tab">Conducción</button>
+      <button class="tab" data-view="evolucion" role="tab">Evolución</button>
     </nav>
     <div style="display: flex; gap: 8px; align-items: center;">
       <button id="btn-cargar-datos" class="btn-pesos" style="font-size: 13px; padding: 8px 14px;">🔄 Recargar del Sheets</button>
@@ -640,7 +641,76 @@ button { font-family: inherit; cursor: pointer; }
     </div>
   </section>
 
-  <div class="footer-note">
+  <!-- ============ EVOLUCIÓN ============ -->
+  <section class="view" id="view-evolucion">
+    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
+      <div>
+        <h2 style="margin: 0; font-size: 20px; font-weight: 700;">Evolución mensual</h2>
+        <p style="margin: 4px 0 0; color: var(--ink-3); font-size: 13px;">Todas las métricas comparadas mes a mes</p>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <label style="font-size: 12px; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;">Mes actual</label>
+        <select id="evo-mes-actual" style="padding: 8px 12px; border: 1px solid var(--gray-100); border-radius: 6px; font-size: 13px;"></select>
+      </div>
+    </div>
+
+    <!-- NIVEL 1: KPIs con delta vs mes anterior -->
+    <div class="grid kpi-grid" style="margin-bottom: 20px;">
+      <div class="kpi">
+        <div class="label">NPS</div>
+        <div class="value"><span id="evo-kpi-nps">—</span></div>
+        <div class="sublabel"><span id="evo-kpi-nps-delta">—</span></div>
+      </div>
+      <div class="kpi">
+        <div class="label">CSAT Global</div>
+        <div class="value"><span id="evo-kpi-csat">—</span><small> / 5</small></div>
+        <div class="sublabel"><span id="evo-kpi-csat-delta">—</span></div>
+      </div>
+      <div class="kpi">
+        <div class="label">Puntualidad</div>
+        <div class="value"><span id="evo-kpi-punt">—</span><small>%</small></div>
+        <div class="sublabel"><span id="evo-kpi-punt-delta">—</span></div>
+      </div>
+      <div class="kpi">
+        <div class="label">Con fallas</div>
+        <div class="value"><span id="evo-kpi-fallas">—</span><small>%</small></div>
+        <div class="sublabel"><span id="evo-kpi-fallas-delta">—</span></div>
+      </div>
+    </div>
+
+    <!-- NIVEL 2: Gráficos por grupo -->
+    <div class="row-equal">
+      <div class="card">
+        <div class="card-header"><h3>🗣 Voz del cliente</h3><span class="hint">NPS · % Detractores · CSAT</span></div>
+        <div class="chart-wrap h-280"><canvas id="evo-chart-vozcliente"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><h3>🕐 Puntualidad</h3><span class="hint">% Salidas y % Llegadas en horario</span></div>
+        <div class="chart-wrap h-280"><canvas id="evo-chart-puntualidad"></canvas></div>
+      </div>
+    </div>
+    <div class="row-equal" style="margin-top: 16px;">
+      <div class="card">
+        <div class="card-header"><h3>🚌 Calidad del servicio</h3><span class="hint">Limpieza · Fallas · Conductor</span></div>
+        <div class="chart-wrap h-280"><canvas id="evo-chart-calidad"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><h3>💳 Experiencia comercial</h3><span class="hint">CSAT compra · Precio-Calidad</span></div>
+        <div class="chart-wrap h-280"><canvas id="evo-chart-comercial"></canvas></div>
+      </div>
+    </div>
+
+    <!-- NIVEL 3: Tabla resumen -->
+    <div class="card" style="margin-top: 16px;">
+      <div class="card-header"><h3>📊 Tabla mensual</h3><span class="hint">Todas las métricas por mes · celdas coloreadas por variación</span></div>
+      <div style="overflow-x: auto;">
+        <table class="table" id="evo-table" style="font-size: 12px; min-width: 100%;">
+          <thead id="evo-table-head"></thead>
+          <tbody id="evo-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
     <strong>Cargas guardadas en este navegador:</strong> los archivos de Servicios y Conductores quedan en localStorage. Para actualizar datos, cargá los archivos nuevos del mes y se reemplazan automáticamente.
   </div>
 
@@ -2921,6 +2991,241 @@ function refresh() {
   renderComercial(data);
   renderMantenimiento(data);
   renderConduccion(data);
+  renderEvolucion(getDataSource());  // usa TODOS los datos (no filtrados) para tener la serie completa
+}
+
+// =============================================================================
+// VISTA EVOLUCIÓN
+// =============================================================================
+
+function renderEvolucion(allData) {
+  // Agrupar respuestas por año-mes (YYYY-MM)
+  const porMes = new Map();
+  allData.forEach(r => {
+    const fecha = r.fecha_respuesta || r.fecha;
+    if (!fecha || fecha.length < 7) return;
+    const yyyymm = fecha.slice(0, 7);
+    if (!porMes.has(yyyymm)) porMes.set(yyyymm, []);
+    porMes.get(yyyymm).push(r);
+  });
+
+  // Ordenar meses cronológicamente
+  const meses = [...porMes.keys()].sort();
+  if (meses.length === 0) {
+    document.getElementById('evo-mes-actual').innerHTML = '<option>Sin datos</option>';
+    return;
+  }
+
+  // Poblar el dropdown de mes actual
+  const selMes = document.getElementById('evo-mes-actual');
+  const mesActual = selMes.value || meses[meses.length - 1];
+  selMes.innerHTML = meses.map(m => `<option value="${m}" ${m === mesActual ? 'selected' : ''}>${nombreMes(m)}</option>`).join('');
+
+  // Calcular métricas por mes
+  const metricasPorMes = {};
+  meses.forEach(m => {
+    metricasPorMes[m] = calcularMetricasMes(porMes.get(m));
+  });
+
+  // KPIs del mes actual + delta vs anterior
+  const mA = mesActual;
+  const idxActual = meses.indexOf(mA);
+  const mAnterior = idxActual > 0 ? meses[idxActual - 1] : null;
+  const metA = metricasPorMes[mA];
+  const metAnt = mAnterior ? metricasPorMes[mAnterior] : null;
+
+  actualizarKPIEvo('nps', metA.nps, metAnt ? metAnt.nps : null, 0);
+  actualizarKPIEvo('csat', metA.csat_global, metAnt ? metAnt.csat_global : null, 2);
+  actualizarKPIEvo('punt', metA.pct_puntualidad, metAnt ? metAnt.pct_puntualidad : null, 0);
+  actualizarKPIEvo('fallas', metA.pct_fallas, metAnt ? metAnt.pct_fallas : null, 0, true);
+
+  // Etiquetas de meses para gráficos
+  const labelsMeses = meses.map(m => nombreMesCorto(m));
+
+  // Gráfico 1: Voz del cliente (NPS, % Detractores, CSAT*10 para que sea comparable en la misma escala)
+  dibujarChartEvo('evo-chart-vozcliente', labelsMeses, [
+    { label: 'NPS', color: PALETTE.orange, data: meses.map(m => metricasPorMes[m].nps) },
+    { label: '% Detractores', color: PALETTE.bad, data: meses.map(m => metricasPorMes[m].pct_detractores) },
+    { label: 'CSAT × 10', color: PALETTE.info, data: meses.map(m => (metricasPorMes[m].csat_global || 0) * 10) }
+  ]);
+
+  // Gráfico 2: Puntualidad
+  dibujarChartEvo('evo-chart-puntualidad', labelsMeses, [
+    { label: '% Salidas en horario', color: PALETTE.good, data: meses.map(m => metricasPorMes[m].pct_salida_horario) },
+    { label: '% Llegadas en horario', color: PALETTE.orange, data: meses.map(m => metricasPorMes[m].pct_llegada_horario) }
+  ]);
+
+  // Gráfico 3: Calidad del servicio
+  dibujarChartEvo('evo-chart-calidad', labelsMeses, [
+    { label: 'CSAT Limpieza', color: PALETTE.good, data: meses.map(m => metricasPorMes[m].csat_limpieza) },
+    { label: '% con fallas', color: PALETTE.bad, data: meses.map(m => metricasPorMes[m].pct_fallas) },
+    { label: 'CSAT Conductor', color: PALETTE.info, data: meses.map(m => metricasPorMes[m].csat_conductor) }
+  ]);
+
+  // Gráfico 4: Experiencia comercial
+  dibujarChartEvo('evo-chart-comercial', labelsMeses, [
+    { label: 'CSAT Compra Digital', color: PALETTE.info, data: meses.map(m => metricasPorMes[m].csat_compra_digital) },
+    { label: 'CSAT Compra Presencial', color: PALETTE.orange, data: meses.map(m => metricasPorMes[m].csat_compra_presencial) },
+    { label: 'Precio-Calidad', color: PALETTE.good, data: meses.map(m => metricasPorMes[m].precio_calidad) }
+  ]);
+
+  // Tabla mensual con colores
+  dibujarTablaEvolucion(meses, metricasPorMes);
+
+  // Listener del selector
+  selMes.onchange = () => renderEvolucion(allData);
+}
+
+function calcularMetricasMes(rows) {
+  const n = rows.length;
+  if (n === 0) return {};
+  const npsValid = rows.map(r => r.nps).filter(v => typeof v === 'number');
+  const promotores = npsValid.filter(v => v >= 9).length;
+  const detractores = npsValid.filter(v => v <= 6).length;
+  const nps = npsValid.length ? Math.round(((promotores - detractores) / npsValid.length) * 100) : null;
+
+  const puntSalida = rows.map(r => r.puntualidad_salida).filter(v => typeof v === 'number');
+  const puntLlegada = rows.map(r => r.puntualidad_llegada).filter(v => typeof v === 'number');
+  const pctSalidaOK = puntSalida.length ? Math.round((puntSalida.filter(v => v === 0).length / puntSalida.length) * 100) : null;
+  const pctLlegadaOK = puntLlegada.length ? Math.round((puntLlegada.filter(v => v === 0).length / puntLlegada.length) * 100) : null;
+
+  const conFallas = rows.filter(r => r.fallas_reportadas && r.fallas_reportadas.length > 0).length;
+
+  return {
+    n: n,
+    nps: nps,
+    pct_detractores: npsValid.length ? Math.round((detractores / npsValid.length) * 100) : null,
+    pct_promotores: npsValid.length ? Math.round((promotores / npsValid.length) * 100) : null,
+    csat_global: promedio(rows, 'csat_global'),
+    csat_limpieza: promedio(rows, 'csat_limpieza'),
+    csat_banos: promedio(rows, 'csat_banos'),
+    csat_conductor: promedio(rows, 'csat_conductor'),
+    csat_compra_digital: promedio(rows, 'csat_compra_digital'),
+    csat_compra_presencial: promedio(rows, 'csat_compra_presencial'),
+    precio_calidad: promedio(rows, 'precio_calidad'),
+    seguridad: promedio(rows, 'seguridad'),
+    pct_salida_horario: pctSalidaOK,
+    pct_llegada_horario: pctLlegadaOK,
+    pct_puntualidad: pctSalidaOK !== null ? pctSalidaOK : null,
+    pct_fallas: n ? Math.round((conFallas / n) * 100) : null
+  };
+}
+
+function promedio(rows, campo) {
+  const vals = rows.map(r => r[campo]).filter(v => typeof v === 'number' && !isNaN(v));
+  if (vals.length === 0) return null;
+  return Math.round((vals.reduce((s, v) => s + v, 0) / vals.length) * 100) / 100;
+}
+
+function actualizarKPIEvo(nombre, valor, valorAnt, decimales, invertido) {
+  const elV = document.getElementById('evo-kpi-' + nombre);
+  const elD = document.getElementById('evo-kpi-' + nombre + '-delta');
+  if (valor === null || valor === undefined || isNaN(valor)) {
+    elV.textContent = '—';
+    elD.innerHTML = '<span style="color: var(--ink-3);">Sin datos</span>';
+    return;
+  }
+  elV.textContent = decimales > 0 ? valor.toFixed(decimales) : Math.round(valor);
+  if (valorAnt === null || valorAnt === undefined || isNaN(valorAnt)) {
+    elD.innerHTML = '<span style="color: var(--ink-3);">Primer mes cargado</span>';
+    return;
+  }
+  const delta = valor - valorAnt;
+  const deltaStr = (delta > 0 ? '+' : '') + (decimales > 0 ? delta.toFixed(decimales) : Math.round(delta));
+  const esBueno = invertido ? (delta < 0) : (delta > 0);
+  const esNeutro = Math.abs(delta) < 0.01;
+  const color = esNeutro ? 'var(--ink-3)' : (esBueno ? 'var(--good)' : 'var(--bad)');
+  const flecha = esNeutro ? '→' : (delta > 0 ? '↑' : '↓');
+  elD.innerHTML = `<span style="color: ${color}; font-weight: 600;">${flecha} ${deltaStr}</span> vs mes anterior`;
+}
+
+function dibujarChartEvo(canvasId, labels, series) {
+  destroyChart(canvasId);
+  charts[canvasId] = new Chart(document.getElementById(canvasId), {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: series.map(s => ({
+        label: s.label,
+        data: s.data,
+        borderColor: s.color,
+        backgroundColor: s.color + '20',
+        borderWidth: 2,
+        tension: 0.3,
+        pointRadius: 4,
+        pointBackgroundColor: s.color
+      }))
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+      scales: {
+        x: { grid: { display: false } },
+        y: { grid: { color: PALETTE.gray100 }, beginAtZero: false }
+      }
+    }
+  });
+}
+
+function dibujarTablaEvolucion(meses, metricasPorMes) {
+  const head = document.getElementById('evo-table-head');
+  const body = document.getElementById('evo-table-body');
+  const filas = [
+    { key: 'nps', label: 'NPS', decimales: 0, invertido: false },
+    { key: 'pct_detractores', label: '% Detractores', decimales: 0, invertido: true },
+    { key: 'pct_promotores', label: '% Promotores', decimales: 0, invertido: false },
+    { key: 'csat_global', label: 'CSAT Global', decimales: 2, invertido: false },
+    { key: 'pct_salida_horario', label: '% Salida en horario', decimales: 0, invertido: false },
+    { key: 'pct_llegada_horario', label: '% Llegada en horario', decimales: 0, invertido: false },
+    { key: 'csat_limpieza', label: 'CSAT Limpieza', decimales: 2, invertido: false },
+    { key: 'csat_banos', label: 'CSAT Baños', decimales: 2, invertido: false },
+    { key: 'csat_conductor', label: 'CSAT Conductor', decimales: 2, invertido: false },
+    { key: 'seguridad', label: 'Seguridad', decimales: 2, invertido: false },
+    { key: 'pct_fallas', label: '% con fallas', decimales: 0, invertido: true },
+    { key: 'csat_compra_digital', label: 'CSAT Compra Digital', decimales: 2, invertido: false },
+    { key: 'csat_compra_presencial', label: 'CSAT Compra Presencial', decimales: 2, invertido: false },
+    { key: 'precio_calidad', label: 'Precio-Calidad', decimales: 2, invertido: false },
+    { key: 'n', label: 'N° Respuestas', decimales: 0, invertido: false }
+  ];
+
+  head.innerHTML = '<tr><th style="text-align:left;">Métrica</th>' +
+    meses.map(m => `<th class="num">${nombreMesCorto(m)}</th>`).join('') + '</tr>';
+
+  body.innerHTML = filas.map(fila => {
+    const cells = meses.map((m, i) => {
+      const val = metricasPorMes[m][fila.key];
+      if (val === null || val === undefined || isNaN(val)) return '<td class="num">—</td>';
+      const valFmt = fila.decimales > 0 ? val.toFixed(fila.decimales) : Math.round(val);
+      // Color por variación vs mes anterior
+      let bg = '';
+      if (i > 0) {
+        const valAnt = metricasPorMes[meses[i-1]][fila.key];
+        if (valAnt !== null && valAnt !== undefined && !isNaN(valAnt)) {
+          const delta = val - valAnt;
+          if (Math.abs(delta) > 0.01) {
+            const esBueno = fila.invertido ? (delta < 0) : (delta > 0);
+            const intensidad = Math.min(Math.abs(delta) / (fila.decimales > 0 ? 0.5 : 10), 1);
+            const alpha = 0.15 + intensidad * 0.35;
+            bg = esBueno ? `background: rgba(46,125,50,${alpha});` : `background: rgba(192,58,43,${alpha});`;
+          }
+        }
+      }
+      return `<td class="num" style="${bg}">${valFmt}</td>`;
+    }).join('');
+    return `<tr><td style="text-align:left; font-weight: 500;">${fila.label}</td>${cells}</tr>`;
+  }).join('');
+}
+
+function nombreMes(yyyymm) {
+  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const [y, m] = yyyymm.split('-');
+  return meses[parseInt(m, 10) - 1] + ' ' + y;
+}
+function nombreMesCorto(yyyymm) {
+  const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const [y, m] = yyyymm.split('-');
+  return meses[parseInt(m, 10) - 1] + ' ' + y.slice(2);
 }
 
 async function init() {
